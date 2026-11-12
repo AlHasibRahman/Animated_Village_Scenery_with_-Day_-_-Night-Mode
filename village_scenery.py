@@ -20,10 +20,13 @@ This is a self-contained 2D OpenGL project. No image assets are required.
 import math
 import random
 import sys
+import shutil
+import subprocess
 
 from OpenGL.GL import *
 from OpenGL.GLU import *
 from OpenGL.GLUT import *
+
 
 WIDTH, HEIGHT = 1100, 800
 WORLD_W, WORLD_H = 100.0, 80.0
@@ -31,7 +34,20 @@ WORLD_W, WORLD_H = 100.0, 80.0
 is_night = False
 is_raining = False
 boat_moving = True
-music_on = False  # Audio intentionally omitted; add audio later if desired.
+
+# Audio settings
+audio_muted = False
+
+background_audio_process = None
+rain_audio_process = None
+
+current_background_file = None
+
+SOUND_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "assets",
+    "sounds"
+)
 
 cloud_offsets = [0.0, 0.0, 0.0, 0.0]
 rain = [(random.uniform(0, WORLD_W), random.uniform(0, WORLD_H))
@@ -52,6 +68,177 @@ boat_direction = 1
 
 def color(r, g, b):
     glColor3f(r, g, b)
+    
+# ============================================================
+# SOUND SYSTEM
+# ============================================================
+
+def stop_audio_process(process):
+    """Stop one currently playing audio process."""
+
+    if process is not None:
+
+        if process.poll() is None:
+
+            process.terminate()
+
+            try:
+                process.wait(timeout=1)
+
+            except subprocess.TimeoutExpired:
+
+                process.kill()
+                process.wait()
+
+    return None
+
+
+def start_audio(filename):
+    """Start an MP3 file and loop it continuously."""
+
+    ffplay = shutil.which("ffplay")
+
+    if ffplay is None:
+
+        print("FFplay not found!")
+        print("Install it using: sudo apt install ffmpeg")
+
+        return None
+
+    audio_path = os.path.join(
+        SOUND_DIR,
+        filename
+    )
+
+    if not os.path.isfile(audio_path):
+
+        print("Audio file not found:", audio_path)
+
+        return None
+
+    try:
+
+        process = subprocess.Popen(
+            [
+                ffplay,
+                "-nodisp",
+                "-loglevel", "error",
+                "-loop", "0",
+                "-volume", "70",
+                audio_path
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True
+        )
+
+        print("Playing:", filename)
+
+        return process
+
+    except OSError as error:
+
+        print("Audio error:", error)
+
+        return None
+
+
+def sync_audio():
+    """
+    Keep day/night background sound playing.
+    Play rain.mp3 on top of it when raining.
+
+    Day + Rain   = day.mp3 + rain.mp3
+    Night + Rain = night.mp3 + rain.mp3
+    """
+
+    global background_audio_process
+    global rain_audio_process
+    global current_background_file
+
+    # Mute all sounds
+    if audio_muted:
+
+        background_audio_process = stop_audio_process(
+            background_audio_process
+        )
+
+        rain_audio_process = stop_audio_process(
+            rain_audio_process
+        )
+
+        current_background_file = None
+
+        return
+
+    # Select background sound using current day/night mode
+    if is_night:
+
+        desired_background = "night.mp3"
+
+    else:
+
+        desired_background = "day.mp3"
+
+    # Change background sound only when necessary
+    if (
+        current_background_file != desired_background
+        or background_audio_process is None
+        or background_audio_process.poll() is not None
+    ):
+
+        background_audio_process = stop_audio_process(
+            background_audio_process
+        )
+
+        background_audio_process = start_audio(
+            desired_background
+        )
+
+        if background_audio_process is not None:
+
+            current_background_file = desired_background
+
+        else:
+
+            current_background_file = None
+
+    # Rain sound works independently of day/night sound
+    if is_raining:
+
+        if (
+            rain_audio_process is None
+            or rain_audio_process.poll() is not None
+        ):
+
+            rain_audio_process = start_audio(
+                "rain.mp3"
+            )
+
+    else:
+
+        rain_audio_process = stop_audio_process(
+            rain_audio_process
+        )
+
+
+def stop_all_audio():
+    """Stop every sound before closing the application."""
+
+    global background_audio_process
+    global rain_audio_process
+    global current_background_file
+
+    background_audio_process = stop_audio_process(
+        background_audio_process
+    )
+
+    rain_audio_process = stop_audio_process(
+        rain_audio_process
+    )
+
+    current_background_file = None
 
 
 def polygon(points, rgb):
@@ -449,24 +636,82 @@ def update(value):
 
 
 def keyboard(key, x, y):
-    global is_night, is_raining, boat_moving, music_on
-    key = key.decode("utf-8", errors="ignore").lower()
 
+    global is_night
+    global is_raining
+    global boat_moving
+    global audio_muted
+
+    key = key.decode(
+        "utf-8",
+        errors="ignore"
+    ).lower()
+
+    # Exit
     if key == '\x1b':
+
+        stop_all_audio()
         sys.exit(0)
+
+    # DAY MODE
     elif key == 'd':
+
         is_night = False
         is_raining = False
+
+        sync_audio()
+
+        print("Day mode activated.")
+
+    # NIGHT MODE
     elif key == 'n':
+
         is_night = True
         is_raining = False
+
+        sync_audio()
+
+        print("Night mode activated.")
+
+    # RAIN MODE
     elif key == 'r':
+
+        # IMPORTANT:
+        # Do not change is_night here!
+        # Rain is an additional visual effect.
+
         is_raining = not is_raining
+
+        sync_audio()
+
+        if is_raining:
+
+            print("Rain activated.")
+
+        else:
+
+            print("Rain stopped.")
+
+    # BOAT
     elif key == 'b':
+
         boat_moving = not boat_moving
+
+    # MUTE / UNMUTE
     elif key == 'm':
-        music_on = False
-        print("Audio is not included in this starter project.")
+
+        audio_muted = not audio_muted
+
+        sync_audio()
+
+        if audio_muted:
+
+            print("All sounds muted.")
+
+        else:
+
+            print("All sounds unmuted.")
+
     glutPostRedisplay()
 
 
@@ -511,6 +756,10 @@ def main():
     glutKeyboardFunc(keyboard)
     glutSpecialFunc(special_keys)
     glutTimerFunc(16, update, 0)
+
+    # Start the correct background sound
+    sync_audio()
+
     glutMainLoop()
 
 
